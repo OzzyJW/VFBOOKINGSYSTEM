@@ -165,7 +165,7 @@ st.session_state.bookings = st.session_state.bookings[COLUMNS]
 st.sidebar.title("🏨 Holiday Hub Navigation")
 page = st.sidebar.radio(
     "Go to:",
-    ["📊 Dashboard & Calendar", "➕ New Booking Request"],
+    ["📊 Dashboard & Calendar", "📈 Summary & Metrics", "➕ New Booking Request"],
 )
 st.sidebar.markdown("---")
 st.sidebar.info(
@@ -391,7 +391,150 @@ if page == "📊 Dashboard & Calendar":
 
 
 # ============================================================
-# PAGE 2: CREATE A NEW BOOKING
+# PAGE 2: SUMMARY AND METRICS
+# ============================================================
+elif page == "📈 Summary & Metrics":
+    st.title("📈 Booking Summary & Metrics")
+    st.caption(
+        "A quick overview of past stays, current guests, upcoming reservations "
+        "and expected occupancy."
+    )
+
+    today = datetime.date.today()
+    window_end = today + datetime.timedelta(days=30)  # exclusive end date
+
+    def to_date(value):
+        """Convert a stored date value to a date, returning None if invalid."""
+        try:
+            if value is None or pd.isna(value):
+                return None
+        except (TypeError, ValueError):
+            return None
+
+        if isinstance(value, datetime.datetime):
+            return value.date()
+        if isinstance(value, datetime.date):
+            return value
+
+        parsed = pd.to_datetime(value, errors="coerce")
+        if pd.isna(parsed):
+            return None
+        return parsed.date()
+
+    # Build a clean list for metrics. Invalid/incomplete date ranges are ignored.
+    records = []
+    for _, booking in st.session_state.bookings.iterrows():
+        start = to_date(booking["Start Date"])
+        end = to_date(booking["End Date"])
+        if start is None or end is None or start >= end:
+            continue
+
+        records.append({
+            "Booking ID": str(booking["Booking ID"]),
+            "Guest": str(booking["Guest"]).strip() or "Guest name not provided",
+            "Check-in": start,
+            "Check-out": end,
+        })
+
+    past_bookings = [booking for booking in records if booking["Check-out"] <= today]
+    current_bookings = [
+        booking for booking in records
+        if booking["Check-in"] <= today < booking["Check-out"]
+    ]
+    upcoming_bookings = [booking for booking in records if booking["Check-in"] > today]
+    next_30_bookings = [
+        booking for booking in records
+        if booking["Check-in"] < window_end and booking["Check-out"] > today
+    ]
+
+    past_bookings.sort(key=lambda booking: booking["Check-out"], reverse=True)
+    current_bookings.sort(key=lambda booking: booking["Check-in"])
+    upcoming_bookings.sort(key=lambda booking: booking["Check-in"])
+    next_30_bookings.sort(key=lambda booking: booking["Check-in"])
+
+    # Occupancy is calculated by occupied nights, counting each calendar night once.
+    period_dates = [today + datetime.timedelta(days=offset) for offset in range(30)]
+    occupied_dates = set()
+    daily_occupancy = []
+    for day in period_dates:
+        occupied = any(
+            booking["Check-in"] <= day < booking["Check-out"]
+            for booking in records
+        )
+        if occupied:
+            occupied_dates.add(day)
+        daily_occupancy.append({
+            # Use a real timestamp so the chart keeps dates in chronological order.
+            "Date": pd.Timestamp(day),
+            "Occupancy": 100 if occupied else 0,
+        })
+
+    occupied_nights = len(occupied_dates)
+    occupancy_rate = occupied_nights / 30 * 100
+
+    metric_cols = st.columns(5)
+    metric_cols[0].metric("Passed bookings", len(past_bookings))
+    metric_cols[1].metric("Currently staying", len(current_bookings))
+    metric_cols[2].metric("Upcoming bookings", len(upcoming_bookings))
+    metric_cols[3].metric("Bookings in next 30 days", len(next_30_bookings))
+    metric_cols[4].metric("Occupancy · next 30 days", f"{occupancy_rate:.0f}%", f"{occupied_nights} of 30 nights")
+
+    st.markdown("### At a glance")
+    chart_col1, chart_col2 = st.columns(2)
+
+    with chart_col1:
+        st.markdown("**Bookings by status**")
+        status_chart = pd.DataFrame({
+            "Status": ["Passed", "Currently staying", "Upcoming"],
+            "Bookings": [len(past_bookings), len(current_bookings), len(upcoming_bookings)],
+        })
+        st.bar_chart(status_chart, x="Status", y="Bookings", height=280)
+
+    with chart_col2:
+        st.markdown("**Occupancy over the next 30 days**")
+        occupancy_chart = pd.DataFrame(daily_occupancy)
+        st.bar_chart(occupancy_chart, x="Date", y="Occupancy", height=280)
+        st.caption(
+            "Each bar represents one night: 100% means booked and 0% means available. "
+            "Check-out dates are not counted as occupied nights."
+        )
+
+    st.markdown("### Guest booking lists")
+    list_tabs = st.tabs(["🗓️ Next 30 days", "⏭️ Upcoming", "✅ Passed"])
+
+    def show_booking_table(container, booking_list, empty_message, limit=None):
+        with container:
+            if not booking_list:
+                st.info(empty_message)
+                return
+            shown = booking_list[:limit] if limit else booking_list
+            table = pd.DataFrame(shown)[["Guest", "Check-in", "Check-out", "Booking ID"]]
+            st.dataframe(table, hide_index=True, use_container_width=True)
+            if limit and len(booking_list) > limit:
+                st.caption(f"Showing the {limit} most recent passed bookings. The full history remains in the booking register.")
+
+    show_booking_table(
+        list_tabs[0], next_30_bookings,
+        "No guests are booked to stay during the next 30 days."
+    )
+    show_booking_table(
+        list_tabs[1], upcoming_bookings,
+        "There are no future check-ins currently recorded."
+    )
+    show_booking_table(
+        list_tabs[2], past_bookings,
+        "There are no completed stays recorded yet.", limit=10
+    )
+
+    st.caption(
+        "Definitions: a passed booking has checked out; a current stay includes today; "
+        "an upcoming booking checks in after today. ‘Next 30 days’ includes any stay "
+        "with at least one occupied night between today and the following 29 days."
+    )
+
+
+# ============================================================
+# PAGE 3: CREATE A NEW BOOKING
 # ============================================================
 elif page == "➕ New Booking Request":
     st.title("➕ Create New Reservation")
